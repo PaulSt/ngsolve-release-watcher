@@ -48,3 +48,23 @@ jobs:
               else:
                   print(f"would notify: {repo}")
           PY
+
+      - name: Create token for ngstents
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: PaulSt
+          repositories: ngstents
+          permission-actions: write
+
+      - name: Send test signal
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh api \
+            --method POST \
+            repos/PaulSt/ngstents/actions/workflows/test-watcher-signal.yml/dispatches \
+            -f ref=master \
+            -f 'inputs[ngsolve_version]=6.2.2608'
