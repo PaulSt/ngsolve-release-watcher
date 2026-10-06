@@ -7,13 +7,22 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - run: python -m pip install packaging
-      - name: Find latest numbered NGSolve release
+
+      - name: Check targets
         run: |
           python - <<'PY'
           import json
           import urllib.request
           from packaging.version import Version
+
+          targets = [
+              "PaulSt/ngstents",
+              "PaulSt/NGSTrefftz",
+              "ngsxfem/ngsxfem",
+          ]
 
           with urllib.request.urlopen("https://pypi.org/pypi/ngsolve/json") as r:
               data = json.load(r)
@@ -26,5 +35,16 @@ jobs:
               and not Version(v).is_devrelease
           ]
 
-          print(max(versions))
+          latest = str(max(versions))
+
+          with open("state.json") as f:
+              state = json.load(f)
+
+          print(f"Latest NGSolve release: {latest}")
+
+          for repo in targets:
+              if state.get(repo) == latest:
+                  print(f"skip: {repo}")
+              else:
+                  print(f"would notify: {repo}")
           PY
