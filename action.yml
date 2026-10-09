@@ -1,0 +1,38 @@
+name: Build for an NGSolve release
+description: Set NGSolve pins and the setuptools-scm RC version in the current checkout
+inputs:
+  ngsolve_version:
+    description: NGSolve version; empty leaves the checkout unchanged
+    default: ''
+  dry_run:
+    description: Whether this build is a dry run (recorded in the build metadata)
+    default: 'true'
+outputs:
+  version:
+    description: Selected package version
+    value: ${{ steps.build.outputs.version }}
+  published:
+    description: Whether this package version is already on PyPI
+    value: ${{ steps.build.outputs.published }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v6
+      if: inputs.ngsolve_version != ''
+      with:
+        python-version: '3.13'
+    - if: inputs.ngsolve_version != ''
+      id: build
+      shell: bash
+      env:
+        NGSOLVE_VERSION: ${{ inputs.ngsolve_version }}
+        DRY_RUN: ${{ inputs.dry_run }}
+      run: |
+        python -m pip install packaging
+        python "$GITHUB_ACTION_PATH/watch.py" build
+    - uses: actions/upload-artifact@v7
+      if: inputs.ngsolve_version != ''
+      with:
+        name: ${{ steps.build.outputs.record_name }}
+        path: ${{ steps.build.outputs.record_path }}
+        if-no-files-found: error
