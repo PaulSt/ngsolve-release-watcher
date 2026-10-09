@@ -1,0 +1,15 @@
+# Keys are PyPI package names. `requires` lists release prerequisites.
+# Wheel globs describe the platforms needed before a release is considered ready.
+[projects.ngstents]
+repository = "PaulSt/ngstents"
+wheels = ["*manylinux*x86_64.whl", "*macosx*universal2.whl", "*win_amd64.whl"]
+
+[projects.xfem]
+repository = "ngsxfem/ngsxfem"
+workflow = "pypi.yml"
+wheels = ["*manylinux*x86_64.whl", "*macosx*universal2.whl", "*win_amd64.whl"]
+
+[projects.ngstrefftz]
+repository = "PaulSt/NGSTrefftz"
+requires = ["ngstents", "xfem"]
+wheels = ["*manylinux*x86_64.whl", "*macosx*universal2.whl", "*win_amd64.whl"]

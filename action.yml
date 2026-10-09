@@ -7,6 +7,15 @@ inputs:
   dry_run:
     description: Whether this build is a dry run (recorded in the build metadata)
     default: 'true'
+  dependencies:
+    description: JSON map of prerequisite package versions (empty resolves from PyPI)
+    default: ''
+  working-directory:
+    description: Path to the package checkout
+    default: '.'
+  python-version:
+    description: Python version to set up (empty uses the existing Python)
+    default: '3.13'
 outputs:
   version:
     description: Selected package version
@@ -18,15 +27,17 @@ runs:
   using: composite
   steps:
     - uses: actions/setup-python@v6
-      if: inputs.ngsolve_version != ''
+      if: inputs.ngsolve_version != '' && inputs.python-version != ''
       with:
-        python-version: '3.13'
+        python-version: ${{ inputs.python-version }}
     - if: inputs.ngsolve_version != ''
       id: build
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
         NGSOLVE_VERSION: ${{ inputs.ngsolve_version }}
         DRY_RUN: ${{ inputs.dry_run }}
+        RELEASE_DEPENDENCIES: ${{ inputs.dependencies }}
       run: |
         python -m pip install packaging
         python "$GITHUB_ACTION_PATH/watch.py" build

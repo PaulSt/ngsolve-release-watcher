@@ -4,26 +4,24 @@ on:
   workflow_dispatch:
     inputs:
       repository:
-        description: Installed add-on repository (owner/name)
-        required: true
-        default: PaulSt/ngstents
+        description: Registered repository (owner/name; empty checks all projects)
         type: string
       ngsolve_version:
         description: NGSolve version (empty uses the latest stable release)
         type: string
       workflow:
-        description: Add-on build workflow filename
+        description: Override the registered build workflow filename
         type: string
-        default: build.yml
       dry_run:
         description: Build and test the release candidate without uploading to PyPI
         type: boolean
         default: true
   schedule:
-    - cron: "0 0 * * 1"
+    - cron: "17 6 * * *"
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: ngsolve-release-watcher
@@ -55,3 +53,9 @@ jobs:
           NGSOLVE_VERSION: ${{ inputs.ngsolve_version }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: python watch.py watch
+
+      - name: Keep scheduled watcher enabled
+        if: always() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method PUT "repos/$GITHUB_REPOSITORY/actions/workflows/watch.yml/enable"
