@@ -7,12 +7,14 @@ import re
 import subprocess
 import tempfile
 import tomllib
+from functools import cache
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import urlopen
 
 from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 NGSOLVE = r"\d+\.\d+\.\d{4}(?:\.post\d+)?"
@@ -21,6 +23,40 @@ NGSOLVE = r"\d+\.\d+\.\d{4}(?:\.post\d+)?"
 def stable(releases):
     return sorted((v for v, files in releases.items() if re.fullmatch(NGSOLVE, v)
                    and any(not f.get("yanked", False) for f in files)), key=Version)
+
+
+def ngsolve_pin(info):
+    for value in info.get("requires_dist") or []:
+        requirement = Requirement(value)
+        if canonicalize_name(requirement.name) == "ngsolve" and not requirement.marker:
+            pin = re.fullmatch(r"==([^,*]+)", str(requirement.specifier))
+            if pin:
+                return pin[1]
+
+
+@cache
+def matching(name, version):
+    """Newest published release with this exact NGSolve pin, including RCs."""
+    releases = pypi(name)["releases"]
+    for value in sorted(releases, key=Version, reverse=True):
+        if any(not f.get("yanked", False) for f in releases[value]):
+            pin = ngsolve_pin(pypi(name, value)["info"])
+            if pin == version:
+                return value
+            # Assume NGSolve pins increase with package versions.
+            if pin and Version(pin) < Version(version):
+                return None
+
+
+def dependencies(project, version):
+    requirements = project["project"].get("dependencies", []) + project["build-system"]["requires"]
+    names = {canonicalize_name(Requirement(r).name) for r in requirements} - {"ngsolve"}
+    selected = {}
+    for name in sorted(names):
+        releases = pypi(name)["releases"]
+        if releases and ngsolve_pin(pypi(name, max(releases, key=Version))["info"]):
+            selected[name] = matching(name, version)
+    return selected
 
 
 def watch(args):
@@ -42,6 +78,14 @@ def watch(args):
                     continue
                 found = True
                 try:
+                    project = tomllib.loads(repo.get_contents("pyproject.toml").decoded_content.decode())
+                    if not args.dry_run and matching(project["project"]["name"], version):
+                        continue
+                    selected = dependencies(project, version)
+                    missing = [name for name, value in selected.items() if not value]
+                    if missing:
+                        print(f"{repo.full_name}: waiting for {', '.join(missing)} on NGSolve {version}")
+                        continue
                     # A checked request preserves GitHub's error message.
                     repo.requester.requestJsonAndCheck(
                         "POST", f"{repo.url}/actions/workflows/{quote(args.workflow, safe='')}/dispatches",
@@ -63,14 +107,21 @@ def git(*args):
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
-def pin(text):
-    data = tomllib.loads(text)
-    runtime = [r for r in data["project"]["dependencies"] if r.startswith("ngsolve==")]
-    build = [r for r in data["build-system"]["requires"] if r.startswith("ngsolve==")]
-    assert len(runtime) == 1 and runtime == build
-    return runtime[0].split("==")[1]
+def pin(text, versions):
+    project = tomllib.loads(text)
+    for value in project["project"].get("dependencies", []) + project["build-system"]["requires"]:
+        requirement = Requirement(value)
+        name = canonicalize_name(requirement.name)
+        if name in versions:
+            extras = f"[{','.join(sorted(requirement.extras))}]" if requirement.extras else ""
+            _, separator, marker = value.partition(";")
+            replacement = f"{requirement.name}{extras}=={versions[name]}{separator}{marker}"
+            for quote in ('"', "'"):
+                text = text.replace(f"{quote}{value}{quote}", f"{quote}{replacement}{quote}")
+    return text
 
 
+@cache
 def pypi(name, version=None):
     route = quote(name, safe="") + (f"/{quote(version, safe='')}" if version else "")
     try:
@@ -104,9 +155,12 @@ def configure_build(version, dry_run=True):
     """Change only the build checkout's pins and record the selected versions."""
     path = Path("pyproject.toml")
     text = path.read_text()
-    name = tomllib.loads(text)["project"]["name"]
+    project = tomllib.loads(text)
+    name = project["project"]["name"]
+    selected_dependencies = dependencies(project, version)
+    assert all(selected_dependencies.values()), f"Waiting for release prerequisites: {selected_dependencies}"
     selected, published = candidate(name, version)
-    path.write_text(text.replace(f"ngsolve=={pin(text)}", f"ngsolve=={version}"))
+    path.write_text(pin(text, {"ngsolve": version, **selected_dependencies}))
     variable = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_" + re.sub(r"[-_.]+", "_", name).upper()
     forwarded = os.getenv("CIBW_ENVIRONMENT_PASS_LINUX", "").split()
     with open(os.environ["GITHUB_ENV"], "a") as output:
