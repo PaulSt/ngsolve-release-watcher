@@ -78,6 +78,9 @@ def watch(args):
                     continue
                 found = True
                 try:
+                    if not any(f.name == "pyproject.toml" for f in repo.get_contents("")):
+                        print(f"{repo.full_name}: skipping (no root pyproject.toml)")
+                        continue
                     project = tomllib.loads(repo.get_contents("pyproject.toml").decoded_content.decode())
                     if not args.dry_run and matching(project["project"]["name"], version):
                         continue
@@ -86,9 +89,13 @@ def watch(args):
                     if missing:
                         print(f"{repo.full_name}: waiting for {', '.join(missing)} on NGSolve {version}")
                         continue
+                    workflow = args.workflow
+                    if not workflow:
+                        files = {f.name for f in repo.get_contents(".github/workflows")}
+                        workflow = next((name for name in ("build.yml", "pypi.yml") if name in files), "build.yml")
                     # A checked request preserves GitHub's error message.
                     repo.requester.requestJsonAndCheck(
-                        "POST", f"{repo.url}/actions/workflows/{quote(args.workflow, safe='')}/dispatches",
+                        "POST", f"{repo.url}/actions/workflows/{quote(workflow, safe='')}/dispatches",
                         input={"ref": repo.default_branch, "inputs": {
                             "ngsolve_version": version, "dry_run": str(args.dry_run).lower(),
                         }},
@@ -191,7 +198,7 @@ def main():
     parser.add_argument("command", choices=["watch", "build"])
     parser.add_argument("--version", default=os.getenv("NGSOLVE_VERSION") or None)
     parser.add_argument("--repository", default=os.getenv("TARGET_REPOSITORY") or None)
-    parser.add_argument("--workflow", default=os.getenv("TARGET_WORKFLOW") or "build.yml")
+    parser.add_argument("--workflow", default=os.getenv("TARGET_WORKFLOW") or None)
     parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction,
                         default=os.getenv("DRY_RUN", "true").strip().lower() != "false")
     args = parser.parse_args()

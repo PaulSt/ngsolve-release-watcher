@@ -12,9 +12,8 @@ on:
         description: NGSolve version (empty uses the latest stable release)
         type: string
       workflow:
-        description: Add-on build workflow filename
+        description: Add-on workflow (empty selects build.yml or pypi.yml)
         type: string
-        default: build.yml
       dry_run:
         description: Build and test the release candidate without uploading to PyPI
         type: boolean
