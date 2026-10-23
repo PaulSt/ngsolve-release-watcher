@@ -59,55 +59,71 @@ def dependencies(project, version):
     return selected
 
 
+def notify_repository(repo, args, version):
+    """Log the repository's decision and dispatch its build when ready."""
+    if repo.archived or repo.disabled:
+        reason = "archived" if repo.archived else "disabled"
+        print(f"{repo.full_name}: skipping ({reason})")
+        return
+    if not any(f.name == "pyproject.toml" for f in repo.get_contents("")):
+        print(f"{repo.full_name}: skipping (no root pyproject.toml)")
+        return
+    project = tomllib.loads(repo.get_contents("pyproject.toml").decoded_content.decode())
+    if not args.dry_run:
+        published = matching(project["project"]["name"], version)
+        if published:
+            print(f"{repo.full_name}: skipping ({project['project']['name']} {published} "
+                  f"already published for NGSolve {version})")
+            return
+    selected = dependencies(project, version)
+    missing = [name for name, value in selected.items() if not value]
+    if missing:
+        print(f"{repo.full_name}: waiting for {', '.join(missing)} on NGSolve {version}")
+        return
+    workflow = args.workflow
+    if not workflow:
+        files = {f.name for f in repo.get_contents(".github/workflows")}
+        workflow = next((name for name in ("build.yml", "pypi.yml") if name in files), "build.yml")
+    print(f"{repo.full_name}: dispatching {workflow} on {repo.default_branch} "
+          f"(NGSolve {version}, dry_run={args.dry_run})")
+    # A checked request preserves GitHub's error message.
+    repo.requester.requestJsonAndCheck(
+        "POST", f"{repo.url}/actions/workflows/{quote(workflow, safe='')}/dispatches",
+        input={"ref": repo.default_branch, "inputs": {
+            "ngsolve_version": version, "dry_run": str(args.dry_run).lower(),
+        }},
+    )
+    print(f"{repo.full_name}: dispatched {workflow}")
+
+
 def watch(args):
     """Dispatch the add-on's build workflow using the App's Actions permission."""
     from github import Auth, GithubIntegration
 
     versions = stable(pypi("ngsolve")["releases"])
     version = next(v for v in reversed(versions) if not args.version or v == args.version)
-    failed, found = False, False
+    found = False
     auth = Auth.AppAuth(os.environ["APP_CLIENT_ID"], os.environ["APP_PRIVATE_KEY"])
     with GithubIntegration(auth=auth, per_page=100) as app:
         for installation in app.get_installations():
-            if installation.suspended_at:
-                continue
-            for repo in installation.get_repos():
-                if repo.archived or repo.disabled:
+            try:
+                if installation.suspended_at:
+                    print(f"Installation {installation.id}: skipping (suspended)")
                     continue
-                if args.repository and repo.full_name.lower() != args.repository.lower():
-                    continue
-                found = True
-                try:
-                    if not any(f.name == "pyproject.toml" for f in repo.get_contents("")):
-                        print(f"{repo.full_name}: skipping (no root pyproject.toml)")
-                        continue
-                    project = tomllib.loads(repo.get_contents("pyproject.toml").decoded_content.decode())
-                    if not args.dry_run and matching(project["project"]["name"], version):
-                        continue
-                    selected = dependencies(project, version)
-                    missing = [name for name, value in selected.items() if not value]
-                    if missing:
-                        print(f"{repo.full_name}: waiting for {', '.join(missing)} on NGSolve {version}")
-                        continue
-                    workflow = args.workflow
-                    if not workflow:
-                        files = {f.name for f in repo.get_contents(".github/workflows")}
-                        workflow = next((name for name in ("build.yml", "pypi.yml") if name in files), "build.yml")
-                    # A checked request preserves GitHub's error message.
-                    repo.requester.requestJsonAndCheck(
-                        "POST", f"{repo.url}/actions/workflows/{quote(workflow, safe='')}/dispatches",
-                        input={"ref": repo.default_branch, "inputs": {
-                            "ngsolve_version": version, "dry_run": str(args.dry_run).lower(),
-                        }},
-                    )
-                    print(f"{repo.full_name}: NGSolve {version}, dry_run={args.dry_run}")
-                except Exception as error:
-                    print(f"::error::{repo.full_name}: {error}")
-                    failed = True
+                for repo in installation.get_repos():
+                    try:
+                        if args.repository and repo.full_name.lower() != args.repository.lower():
+                            print(f"{repo.full_name}: skipping (repository filter: {args.repository})")
+                            continue
+                        found = True
+                        notify_repository(repo, args, version)
+                    except Exception as error:
+                        print(f"::warning::{repo.full_name}: {error}")
+            except Exception as error:
+                print(f"::warning::Installation {installation.id}: {error}")
     if args.repository and not found:
-        print(f"::error::{args.repository} is not accessible to the App")
-        failed = True
-    return int(failed)
+        print(f"::warning::{args.repository} is not accessible to the App")
+    return 0
 
 
 def git(*args):
