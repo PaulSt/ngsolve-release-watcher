@@ -34,17 +34,30 @@ def ngsolve_pin(info):
                 return pin[1]
 
 
+def is_rc(version):
+    return (version.pre is not None and version.pre[0] == "rc"
+            and not version.is_devrelease and not version.is_postrelease
+            and version.local is None)
+
+
 @cache
-def matching(name, version):
-    """Newest published release with this exact NGSolve pin, including RCs."""
+def matching(name, version, *, for_release=False):
+    """Find an exact pin; release checks require an RC or finalized target series."""
     releases = pypi(name)["releases"]
     for value in sorted(releases, key=Version, reverse=True):
+        parsed = Version(value)
+        if for_release and (parsed.micro != Version(version).micro
+                            or not (is_rc(parsed) or not parsed.is_prerelease)):
+            continue
         if any(not f.get("yanked", False) for f in releases[value]):
+            # A finalized series must never trigger an earlier RC, even if its pin differs.
+            if for_release and not parsed.is_prerelease:
+                return value
             pin = ngsolve_pin(pypi(name, value)["info"])
             if pin == version:
                 return value
             # Assume NGSolve pins increase with package versions.
-            if pin and Version(pin) < Version(version):
+            if not for_release and pin and Version(pin) < Version(version):
                 return None
 
 
@@ -70,10 +83,12 @@ def notify_repository(repo, args, version):
         return
     project = tomllib.loads(repo.get_contents("pyproject.toml").decoded_content.decode())
     if not args.dry_run:
-        published = matching(project["project"]["name"], version)
+        published = matching(project["project"]["name"], version, for_release=True)
         if published:
-            print(f"{repo.full_name}: skipping ({project['project']['name']} {published} "
-                  f"already published for NGSolve {version})")
+            reason = (f"already published for NGSolve {version}"
+                      if Version(published).is_prerelease
+                      else f"already finalized the {Version(version).micro} series")
+            print(f"{repo.full_name}: skipping ({project['project']['name']} {published} {reason})")
             return
     selected = dependencies(project, version)
     missing = [name for name, value in selected.items() if not value]
@@ -158,19 +173,22 @@ def pypi(name, version=None):
 
 
 def candidate(name, ngsolve_version):
-    """Use PyPI to reuse a matching release or select the next RC."""
-    versions = sorted(map(Version, pypi(name)["releases"]))
+    """Reuse a published RC or select the next RC; finalized series cannot be built."""
+    releases = pypi(name)["releases"]
+    versions = sorted(map(Version, releases))
     latest = max(versions or [Version(t[1:]) for t in git("tag", "--list", "v*").splitlines()]
                  or [Version("0.1.0")])
     base = Version(f"{latest.major}.{latest.minor}.{Version(ngsolve_version).micro}")
     series = [v for v in versions if v.release == base.release]
+    if any(not v.is_prerelease for v in series):
+        raise ValueError(f"{base} is already finalized on PyPI")
     for value in reversed(series):
-        requirements = map(Requirement, pypi(name, str(value))["info"]["requires_dist"])
-        if any(r.name.lower() == "ngsolve" and str(r.specifier) == f"=={ngsolve_version}"
-               for r in requirements):
+        if not is_rc(value) or not any(not f.get("yanked", False)
+                                       for f in releases[str(value)]):
+            continue
+        if ngsolve_pin(pypi(name, str(value))["info"]) == ngsolve_version:
             return str(value), True
-    assert all(v.pre for v in series), f"{base} is already finalized on PyPI"
-    number = 1 + max((v.pre[1] for v in series), default=0)
+    number = 1 + max((v.pre[1] for v in series if v.pre and v.pre[0] == "rc"), default=0)
     return f"{base}rc{number}", False
 
 
@@ -183,6 +201,8 @@ def configure_build(version, dry_run=True):
     selected_dependencies = dependencies(project, version)
     assert all(selected_dependencies.values()), f"Waiting for release prerequisites: {selected_dependencies}"
     selected, published = candidate(name, version)
+    if not is_rc(Version(selected)):
+        raise ValueError(f"Refusing to build a non-RC version: {selected}")
     path.write_text(pin(text, {"ngsolve": version, **selected_dependencies}))
     variable = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_" + re.sub(r"[-_.]+", "_", name).upper()
     forwarded = os.getenv("CIBW_ENVIRONMENT_PASS_LINUX", "").split()
